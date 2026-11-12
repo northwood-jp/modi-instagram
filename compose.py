@@ -110,8 +110,24 @@ _CUT = {}
 def cut_url(url):
     """同じ写真を何度も取りに行かないように、切り抜いた結果を覚えておく"""
     if url not in _CUT:
-        _CUT[url] = cutout(fetch(url))
+        im = fetch(url)
+        _CUT[url] = cutout(im) if white_border(im) else framed(im)
     return _CUT[url]
+
+
+def white_border(im, thr=225):
+    """写真のふちが白い背景かどうか（白くなければ、人が着ている写真などとみなす）"""
+    a = np.asarray(im).astype(int)
+    edge = np.concatenate([a[0], a[-1], a[:, 0], a[:, -1]])
+    return (edge.min(axis=1) > thr).mean() > 0.85
+
+
+def framed(im):
+    """白い背景でない写真は、切り抜かずに、白いふちのついた写真カードとして見せる"""
+    pad = 16
+    card = Image.new('RGBA', (im.width + pad * 2, im.height + pad * 2), (255, 255, 255, 255))
+    card.paste(im, (pad, pad))
+    return card
 
 
 def place(canvas, img, box, rot=0):
@@ -144,7 +160,7 @@ def cover(draft, no):
     im = Image.new('RGB', (W, H), CREAM)
     d = ImageDraw.Draw(im)
     d.text((60, 55), 'MoDi', font=font(SANS_B, 40), fill=INK)
-    d.text((190, 72), 'COORDINATE ARCHIVE  No.{:02d}'.format(no), font=font(SANS_R, 20), fill=GRAY)
+    d.text((190, 72), 'PICK UP ARCHIVE  No.{:02d}'.format(no), font=font(SANS_R, 20), fill=GRAY)
     d.line([60, 120, 1020, 120], fill=INK, width=2)
     d.text((1020, 150), draft.get('headline1', ''), font=font(SERIF_B, 52), fill=INK, anchor='ra')
     d.text((1020, 215), draft.get('headline2', ''), font=font(SERIF_B, 52), fill=INK, anchor='ra')
