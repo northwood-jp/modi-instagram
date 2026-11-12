@@ -44,6 +44,36 @@ def fetch(url):
     return im
 
 
+def keep_main(fg):
+    """切り抜いた部分のうち、大きなかたまり（商品本体）だけを残し、小さな文字や汚れを消す"""
+    h, w = fg.shape
+    label = np.zeros((h, w), dtype=np.int32)
+    sizes = [0]
+    cur = 0
+    for y0 in range(h):
+        for x0 in range(w):
+            if fg[y0, x0] and not label[y0, x0]:
+                cur += 1
+                label[y0, x0] = cur
+                q = deque([(y0, x0)])
+                n = 0
+                while q:
+                    y, x = q.popleft()
+                    n += 1
+                    for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                        ny, nx = y + dy, x + dx
+                        if 0 <= ny < h and 0 <= nx < w and fg[ny, nx] and not label[ny, nx]:
+                            label[ny, nx] = cur
+                            q.append((ny, nx))
+                sizes.append(n)
+    if cur == 0:
+        return fg
+    biggest = max(sizes)
+    keep = np.array([s >= biggest * 0.08 for s in sizes])
+    keep[0] = False
+    return keep[label]
+
+
 def cutout(im, thr=232):
     """写真のまわりの白い背景を切り抜く（ふちから続く白い部分だけを消す）"""
     a = np.asarray(im).astype(int)
@@ -65,12 +95,23 @@ def cutout(im, thr=232):
             ny, nx = y + dy, x + dx
             if 0 <= ny < h and 0 <= nx < w and white[ny, nx] and not bg[ny, nx]:
                 bg[ny, nx] = True; q.append((ny, nx))
-    alpha = Image.fromarray(((~bg) * 255).astype('uint8'))
+    fg = keep_main(~bg)
+    alpha = Image.fromarray((fg * 255).astype('uint8'))
     alpha = alpha.filter(ImageFilter.MinFilter(3)).filter(ImageFilter.GaussianBlur(1))
     rgba = im.convert('RGBA')
     rgba.putalpha(alpha)
     box = alpha.getbbox()
     return rgba.crop(box) if box else rgba
+
+
+_CUT = {}
+
+
+def cut_url(url):
+    """同じ写真を何度も取りに行かないように、切り抜いた結果を覚えておく"""
+    if url not in _CUT:
+        _CUT[url] = cutout(fetch(url))
+    return _CUT[url]
 
 
 def place(canvas, img, box, rot=0):
@@ -122,7 +163,7 @@ def cover(draft, no):
         if not p:
             continue
         try:
-            place(im, cutout(fetch(p['img'])), box, rot)
+            place(im, cut_url(p['img']), box, rot)
         except Exception as e:
             print('写真の取得に失敗:', p.get('img'), e)
         caption(d, cx, cy, p, al)
@@ -153,6 +194,13 @@ def page(draft, pg, idx, total, no):
     y += 50
     for ln in wrap_ja(pg.get('body', ''), 19):
         d.text((tx + 60, y), ln, font=font(SANS_R, 40), fill=(40, 40, 32)); y += 66
+    # 下の空いたところに、主役の商品の写真を添える
+    if y < ty + th - 420:
+        try:
+            place(im, cut_url(draft['products'][0]['img']), (tx + 160, y + 30, tx + tw - 160, ty + th - 140), 0)
+        except Exception as e:
+            print('写真の取得に失敗:', e)
+    d = ImageDraw.Draw(im)
     d.line([tx + 50, ty + th - 110, tx + tw - 50, ty + th - 110], fill=(60, 60, 50), width=2)
     d.text((W // 2, ty + th - 85), 'MILITARY ARCHIVE CURATION STORE  ―  memento mori & carpe diem.',
            font=font(SANS_R, 22), fill=(60, 60, 50), anchor='ma')
