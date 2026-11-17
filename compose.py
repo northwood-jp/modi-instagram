@@ -118,7 +118,7 @@ def item(p, idx, total):
     im = Image.new('RGB', (W, H), CREAM)
     d = ImageDraw.Draw(im)
     d.text((60, 50), 'MoDi ARCHIVE FILE', font=font(SANS_B, 24), fill=OLIVE)
-    d.text((1020, 50), '{}　{}/{}'.format(p.get('theme', ''), idx, total), font=font(SANS_R, 24), fill=(110, 110, 95), anchor='ra')
+    d.text((1020, 50), '{}　{}/{}'.format(p.get('theme', ''), idx - 1, total - 1), font=font(SANS_R, 24), fill=(110, 110, 95), anchor='ra')
     d.line([60, 92, 1020, 92], fill=OLIVE, width=2)
     bx0, by0, bx1, by1 = 60, 120, 1020, 860
     try:
