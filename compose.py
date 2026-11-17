@@ -1,4 +1,4 @@
-"""MoDi Instagram：下書きを読み取って、誌面風の画像を作る"""
+"""MoDi Instagram：下書きを読み取って、誌面風の画像を作る（表紙＋1点ずつのアーカイブカード）"""
 import io, json, os, re, datetime
 from collections import deque
 import numpy as np
@@ -12,7 +12,11 @@ FONT_DIR = '/usr/share/fonts/opentype/noto/'
 SANS_R = FONT_DIR + 'NotoSansCJK-Regular.ttc'
 SANS_B = FONT_DIR + 'NotoSansCJK-Bold.ttc'
 SERIF_B = FONT_DIR + 'NotoSerifCJK-Bold.ttc'
-CREAM, INK, GRAY, OLIVE = (241, 236, 224), (30, 30, 25), (80, 80, 70), (62, 66, 44)
+CREAM, INK, GRAY, OLIVE = (244, 240, 230), (25, 25, 22), (80, 80, 70), (62, 66, 44)
+TAN = (214, 204, 178)
+NUM = '/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed-Bold.ttf'
+if not os.path.exists(NUM):
+    NUM = SANS_B
 
 
 def font(path, size):
@@ -40,186 +44,116 @@ def fetch(url):
     r = requests.get(url, timeout=30)
     r.raise_for_status()
     im = Image.open(io.BytesIO(r.content)).convert('RGB')
-    im.thumbnail((900, 900))
+    im.thumbnail((1400, 1400))
     return im
 
 
-def keep_main(fg):
-    """切り抜いた部分のうち、大きなかたまり（商品本体）だけを残し、小さな文字や汚れを消す"""
-    h, w = fg.shape
-    label = np.zeros((h, w), dtype=np.int32)
-    sizes = [0]
-    cur = 0
-    for y0 in range(h):
-        for x0 in range(w):
-            if fg[y0, x0] and not label[y0, x0]:
-                cur += 1
-                label[y0, x0] = cur
-                q = deque([(y0, x0)])
-                n = 0
-                while q:
-                    y, x = q.popleft()
-                    n += 1
-                    for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                        ny, nx = y + dy, x + dx
-                        if 0 <= ny < h and 0 <= nx < w and fg[ny, nx] and not label[ny, nx]:
-                            label[ny, nx] = cur
-                            q.append((ny, nx))
-                sizes.append(n)
-    if cur == 0:
-        return fg
-    biggest = max(sizes)
-    keep = np.array([s >= biggest * 0.08 for s in sizes])
-    keep[0] = False
-    return keep[label]
+
+def wrap_px(d, text, f, maxw):
+    """横幅（ピクセル）で折り返す。句読点が行頭に来ないようにする"""
+    lines, cur = [], ''
+    for ch in str(text):
+        if d.textlength(cur + ch, font=f) > maxw and cur and ch not in '、。」）・ー':
+            lines.append(cur)
+            cur = ch
+        else:
+            cur += ch
+    if cur:
+        lines.append(cur)
+    return lines
 
 
-def cutout(im, thr=232):
-    """写真のまわりの白い背景を切り抜く（ふちから続く白い部分だけを消す）"""
-    a = np.asarray(im).astype(int)
-    white = a.min(axis=2) > thr
-    h, w = white.shape
-    bg = np.zeros_like(white)
-    q = deque()
-    for x in range(w):
-        for y in (0, h - 1):
-            if white[y, x] and not bg[y, x]:
-                bg[y, x] = True; q.append((y, x))
-    for y in range(h):
-        for x in (0, w - 1):
-            if white[y, x] and not bg[y, x]:
-                bg[y, x] = True; q.append((y, x))
-    while q:
-        y, x = q.popleft()
-        for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-            ny, nx = y + dy, x + dx
-            if 0 <= ny < h and 0 <= nx < w and white[ny, nx] and not bg[ny, nx]:
-                bg[ny, nx] = True; q.append((ny, nx))
-    fg = keep_main(~bg)
-    alpha = Image.fromarray((fg * 255).astype('uint8'))
-    alpha = alpha.filter(ImageFilter.MinFilter(3)).filter(ImageFilter.GaussianBlur(1))
-    rgba = im.convert('RGBA')
-    rgba.putalpha(alpha)
-    box = alpha.getbbox()
-    return rgba.crop(box) if box else rgba
-
-
-_CUT = {}
-
-
-def cut_url(url):
-    """同じ写真を何度も取りに行かないように、切り抜いた結果を覚えておく"""
-    if url not in _CUT:
-        im = fetch(url)
-        _CUT[url] = cutout(im) if white_border(im) else framed(im)
-    return _CUT[url]
-
-
-def white_border(im, thr=225):
-    """写真のふちが白い背景かどうか（白くなければ、人が着ている写真などとみなす）"""
-    a = np.asarray(im).astype(int)
+def edge_color(im):
+    """写真の縁の色（台紙の色に使う）"""
+    a = np.asarray(im.convert('RGB')).astype(int)
     edge = np.concatenate([a[0], a[-1], a[:, 0], a[:, -1]])
-    return (edge.min(axis=1) > thr).mean() > 0.85
+    return tuple(int(x) for x in np.median(edge, axis=0))
 
 
-def framed(im):
-    """白い背景でない写真は、切り抜かずに、白いふちのついた写真カードとして見せる"""
-    pad = 16
-    card = Image.new('RGBA', (im.width + pad * 2, im.height + pad * 2), (255, 255, 255, 255))
-    card.paste(im, (pad, pad))
-    return card
+def fit(im, w, h):
+    r = min(w / im.width, h / im.height)
+    return im.resize((max(1, int(im.width * r)), max(1, int(im.height * r))), Image.LANCZOS)
 
 
-def place(canvas, img, box, rot=0):
-    x0, y0, x1, y1 = box
-    s = min((x1 - x0) / img.width, (y1 - y0) / img.height)
-    i = img.resize((max(1, int(img.width * s)), max(1, int(img.height * s))), Image.LANCZOS)
-    i = i.rotate(rot, expand=True, resample=Image.BICUBIC)
-    a = i.split()[3].point(lambda v: int(v * 0.25))
-    shadow = Image.merge('RGBA', (Image.new('L', i.size, 40),) * 3 + (a,)).filter(ImageFilter.GaussianBlur(8))
-    x = x0 + ((x1 - x0) - i.width) // 2
-    y = y0 + ((y1 - y0) - i.height) // 2
-    canvas.paste(shadow, (x + 6, y + 10), shadow)
-    canvas.paste(i, (x, y), i)
-
-
-def short(name):
-    """表示用に、説明語を除いて短くする"""
-    return re.sub(r'\s+', ' ', re.sub(r'(デッドストック|レプリカ|放出|未使用)', '', str(name))).strip()[:16]
-
-
-def caption(d, x, y, p, align='l'):
-    anchor = 'la' if align == 'l' else 'ra'
-    name = short(p['name'])
-    d.text((x, y), name, font=font(SANS_B, 22), fill=INK, anchor=anchor)
-    d.text((x, y + 32), p.get('sub', ''), font=font(SANS_R, 18), fill=GRAY, anchor=anchor)
-    d.text((x, y + 58), '¥{:,}'.format(int(p.get('price') or 0)), font=font(SANS_B, 20), fill=INK, anchor=anchor)
+def fill(im, w, h):
+    r = max(w / im.width, h / im.height)
+    im = im.resize((int(im.width * r) + 1, int(im.height * r) + 1), Image.LANCZOS)
+    x, y = (im.width - w) // 2, max(0, (im.height - h) // 3)
+    return im.crop((x, y, x + w, y + h))
 
 
 def cover(draft, no):
-    im = Image.new('RGB', (W, H), CREAM)
+    """表紙：主役の写真を全面に敷いて、キャッチコピーを大きく"""
+    p0 = draft['products'][0]
+    try:
+        im = fill(fetch(p0['img']), W, H)
+    except Exception as e:
+        print('写真の取得に失敗:', e)
+        im = Image.new('RGB', (W, H), OLIVE)
+    g = np.linspace(0.15, 0.7, H)[:, None, None]
+    im = Image.fromarray((np.asarray(im).astype(float) * (1 - g)).clip(0, 255).astype('uint8'))
     d = ImageDraw.Draw(im)
-    d.text((60, 55), 'MoDi', font=font(SANS_B, 40), fill=INK)
-    d.text((190, 72), 'PICK UP ARCHIVE  No.{:02d}'.format(no), font=font(SANS_R, 20), fill=GRAY)
-    d.line([60, 120, 1020, 120], fill=INK, width=2)
-    d.text((1020, 150), draft.get('headline1', ''), font=font(SERIF_B, 52), fill=INK, anchor='ra')
-    d.text((1020, 215), draft.get('headline2', ''), font=font(SERIF_B, 52), fill=INK, anchor='ra')
-    d.text((1020, 290), draft.get('sub', ''), font=font(SANS_R, 20), fill=GRAY, anchor='ra')
-    roles = {p['role']: p for p in draft['products']}
-    has_bag = '小物' in roles
-    layout = {
-        '主役': ((50, 150, 560, 760), 3, (70, 770, 'l')),
-        'ボトムス': ((600, 340, 1020, 1080), -4, (1020, 1090, 'r')),
-        '小物': ((60, 880, 420, 1150), -6, (70, 1160, 'l')),
-        'シューズ': (((440, 990, 760, 1180), 8, (470, 1195, 'l')) if has_bag
-                  else ((90, 900, 520, 1160), 8, (110, 1180, 'l'))),
-    }
-    for role, (box, rot, (cx, cy, al)) in layout.items():
-        p = roles.get(role)
-        if not p:
+    d.text((60, 55), 'MoDi', font=font(SANS_B, 40), fill='white')
+    d.text((1020, 70), 'ARCHIVE FILE  No.{:02d}'.format(no), font=font(SANS_R, 22), fill='white', anchor='ra')
+    f = font(SANS_B, 92)
+    y = 720
+    for t in (draft.get('headline1', ''), draft.get('headline2', '')):
+        if not t:
             continue
-        try:
-            place(im, cut_url(p['img']), box, rot)
-        except Exception as e:
-            print('写真の取得に失敗:', p.get('img'), e)
-        caption(d, cx, cy, p, al)
-    d.line([60, 1295, 1020, 1295], fill=INK, width=1)
-    d.text((60, 1305), 'MILITARY ARCHIVE CURATION STORE', font=font(SANS_R, 16), fill=GRAY)
-    d.text((1020, 1305), 'modi.northwood-jp.com', font=font(SANS_R, 16), fill=GRAY, anchor='ra')
+        d.text((W // 2 + 3, y + 3), t, font=f, fill=(0, 0, 0), anchor='ma')
+        d.text((W // 2, y), t, font=f, fill='white', anchor='ma')
+        y += 122
+    chip = p0.get('theme', 'PICK UP')
+    cf = font(SANS_B, 32)
+    cw = d.textlength(chip, font=cf) + 60
+    d.rectangle([W // 2 - cw / 2, y + 20, W // 2 + cw / 2, y + 80], fill=OLIVE)
+    d.text((W // 2, y + 50), chip, font=cf, fill=CREAM, anchor='mm')
+    d.text((W // 2, y + 118), draft.get('sub', ''), font=font(SANS_R, 30), fill='white', anchor='ma')
+    d.text((W // 2, H - 60), 'MILITARY ARCHIVE CURATION STORE', font=font(SANS_R, 18), fill=(220, 220, 210), anchor='ma')
     return im
 
 
-def page(draft, pg, idx, total, no):
-    im = Image.new('RGB', (W, H), OLIVE)
+def item(p, idx, total):
+    """2枚目以降：1点ずつのアーカイブカード"""
+    im = Image.new('RGB', (W, H), CREAM)
     d = ImageDraw.Draw(im)
-    rng = np.random.default_rng(idx)
-    noise = rng.normal(0, 6, (H, W, 1))
-    im = Image.fromarray(np.clip(np.asarray(im).astype(float) + noise, 0, 255).astype('uint8'))
+    d.text((60, 50), 'MoDi ARCHIVE FILE', font=font(SANS_B, 24), fill=OLIVE)
+    d.text((1020, 50), '{}　{}/{}'.format(p.get('theme', ''), idx, total), font=font(SANS_R, 24), fill=(110, 110, 95), anchor='ra')
+    d.line([60, 92, 1020, 92], fill=OLIVE, width=2)
+    bx0, by0, bx1, by1 = 60, 120, 1020, 860
+    try:
+        photo = fetch(p['img'])
+        d.rectangle([bx0, by0, bx1, by1], fill=edge_color(photo))
+        ph = fit(photo, bx1 - bx0 - 120, by1 - by0 - 80)
+        im.paste(ph, (bx0 + (bx1 - bx0 - ph.width) // 2, by0 + (by1 - by0 - ph.height) // 2))
+    except Exception as e:
+        print('写真の取得に失敗:', p.get('img'), e)
+        d.rectangle([bx0, by0, bx1, by1], fill=(232, 226, 210))
     d = ImageDraw.Draw(im)
-    tx, ty, tw, th = 80, 90, 920, 1170
-    d.rectangle([tx + 10, ty + 10, tx + tw + 10, ty + th + 10], fill=(40, 42, 28))
-    d.rectangle([tx, ty, tx + tw, ty + th], fill=(236, 230, 214))
-    d.rectangle([tx + 16, ty + 16, tx + tw - 16, ty + th - 16], outline=(60, 60, 50), width=2)
-    hero = short(draft['products'][0]['name'])
-    d.text((tx + 50, ty + 50), 'MoDi 名作図鑑｜' + hero, font=font(SANS_R, 28), fill=(60, 60, 50))
-    d.text((tx + tw - 50, ty + 50), '{}/{}'.format(idx, total), font=font(SANS_R, 28), fill=(60, 60, 50), anchor='ra')
-    d.line([tx + 50, ty + 100, tx + tw - 50, ty + 100], fill=(60, 60, 50), width=2)
-    y = ty + 160
-    for ln in wrap_ja(pg.get('title', ''), 14):
-        d.text((tx + 60, y), ln, font=font(SERIF_B, 56), fill=(25, 25, 20)); y += 76
-    y += 50
-    for ln in wrap_ja(pg.get('body', ''), 19):
-        d.text((tx + 60, y), ln, font=font(SANS_R, 40), fill=(40, 40, 32)); y += 66
-    # 下の空いたところに、主役の商品の写真を添える
-    if y < ty + th - 420:
-        try:
-            place(im, cut_url(draft['products'][0]['img']), (tx + 160, y + 30, tx + tw - 160, ty + th - 140), 0)
-        except Exception as e:
-            print('写真の取得に失敗:', e)
-    d = ImageDraw.Draw(im)
-    d.line([tx + 50, ty + th - 110, tx + tw - 50, ty + th - 110], fill=(60, 60, 50), width=2)
-    d.text((W // 2, ty + th - 85), 'MILITARY ARCHIVE CURATION STORE  ―  memento mori & carpe diem.',
-           font=font(SANS_R, 22), fill=(60, 60, 50), anchor='ma')
+    for (x, y, sx, sy) in [(bx0, by0, 1, 1), (bx1, by0, -1, 1), (bx0, by1, 1, -1), (bx1, by1, -1, -1)]:
+        d.line([x + sx * 14, y + sy * 14, x + sx * 64, y + sy * 14], fill=OLIVE, width=4)
+        d.line([x + sx * 14, y + sy * 14, x + sx * 14, y + sy * 64], fill=OLIVE, width=4)
+    tx, ty = 60, 810
+    d.rectangle([tx, ty, tx + 250, ty + 96], fill=OLIVE)
+    d.ellipse([tx + 18, ty + 36, tx + 42, ty + 60], fill=CREAM)
+    d.text((tx + 60, ty + 12), 'ITEM', font=font(SANS_B, 20), fill=TAN)
+    d.text((tx + 60, ty + 30), 'No.{:02d}'.format(idx - 1), font=font(NUM, 54), fill=CREAM)
+    y = 935
+    nf = font(SERIF_B, 46)
+    for ln in wrap_px(d, p.get('name', ''), nf, 960)[:2]:
+        d.text((60, y), ln, font=nf, fill=INK)
+        y += 62
+    y += 12
+    df = font(SANS_R, 26)
+    for ln in wrap_px(d, p.get('desc', ''), df, 960)[:4]:
+        d.text((60, y), ln, font=df, fill=(60, 60, 50))
+        y += 44
+    d.line([60, H - 120, 1020, H - 120], fill=OLIVE, width=2)
+    cols = [('COUNTRY', p.get('country', '')), ('TYPE', p.get('kind', '')), ('PRICE', '¥{:,}'.format(int(p.get('price') or 0)))]
+    for i, (k, v) in enumerate(cols):
+        x = 60 + i * 330
+        d.text((x, H - 102), k, font=font(SANS_B, 18), fill=(130, 125, 105))
+        d.text((x, H - 76), v, font=font(SANS_B, 30), fill=INK)
     return im
 
 
@@ -233,11 +167,12 @@ def main():
         folder = 'images/r{}_{}'.format(dft['row'], stamp)
         os.makedirs(folder, exist_ok=True)
         files = []
-        total = 1 + len(dft.get('pages', []))
+        prods = dft.get('products', [])
+        total = 1 + len(prods)
         img = cover(dft, dft['row'] - 1)
         path = folder + '/1.jpg'; img.save(path, 'JPEG', quality=92); files.append(path)
-        for i, pg in enumerate(dft.get('pages', []), start=2):
-            img = page(dft, pg, i, total, dft['row'] - 1)
+        for i, p in enumerate(prods, start=2):
+            img = item(p, i, total)
             path = folder + '/{}.jpg'.format(i); img.save(path, 'JPEG', quality=92); files.append(path)
         manifest.append({'row': dft['row'], 'files': files})
         print('作成：', folder)
