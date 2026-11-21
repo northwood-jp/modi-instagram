@@ -8,13 +8,13 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 GAS_URL = os.environ.get('GAS_URL', '')
 GAS_TOKEN = os.environ.get('GAS_TOKEN', '')
 W, H = 1080, 1350
-FONT_DIR = '/usr/share/fonts/opentype/noto/'
-SANS_R = FONT_DIR + 'NotoSansCJK-Regular.ttc'
-SANS_B = FONT_DIR + 'NotoSansCJK-Bold.ttc'
-SERIF_B = FONT_DIR + 'NotoSerifCJK-Bold.ttc'
+FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fonts') + '/'   # リポジトリに入れたフォントを使う
+SANS_R = FONT_DIR + 'NotoSansJP-Regular.otf'
+SANS_B = FONT_DIR + 'NotoSansJP-Bold.otf'
+SERIF_B = FONT_DIR + 'NotoSerifJP-Bold.otf'
 CREAM, INK, GRAY, OLIVE = (244, 240, 230), (25, 25, 22), (80, 80, 70), (62, 66, 44)
 TAN = (214, 204, 178)
-NUM = '/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed-Bold.ttf'
+NUM = FONT_DIR + 'DejaVuSansCondensed-Bold.ttf'
 if not os.path.exists(NUM):
     NUM = SANS_B
 

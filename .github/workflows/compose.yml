@@ -11,14 +11,12 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: 日本語のフォントを入れる
-        timeout-minutes: 8
-        run: sudo apt-get update && sudo apt-get install -y -o Acquire::Retries=3 --no-install-recommends fonts-noto-cjk
       - name: 必要な部品を入れる
         run: pip install pillow numpy requests
       - name: 画像を作る
